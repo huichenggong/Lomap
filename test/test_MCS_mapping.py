@@ -225,7 +225,45 @@ class MyTestCase(unittest.TestCase):
         self.assertTupleEqual(m34.broken_ring_bonds(), ([(14,19)],[]))
 
     def test_scaffold_hopping(self):
-        pass
+        print("# scaffold hopping")
+        sdf_dir = base / "schrodinger_sets/scaffold_hopping"
+        sdf =  Chem.SDMolSupplier(sdf_dir / "Bace1_4zsp_ligands.sdf", removeHs=False)
+        mol1 = sdf[0]
+        mol2 = sdf[1]
+        mol3 = sdf[2]
+
+        m12 = lomap_mcs.MCS(
+            mol1, mol2,
+            time=40, threed=True, max3d=1.5, element_change=True,
+            seed="", shift=False, ring_breaking=True,
+        )
+        breakA, breakB = m12.broken_ring_bonds()
+        self.assertEqual(len(breakA), 0)
+        self.assertEqual(len(breakB), 1)
+
+        m23 = lomap_mcs.MCS(
+            mol2, mol3,
+            time=40, threed=True, max3d=1.5, element_change=True,
+            seed="", shift=False, ring_breaking=True,
+        )
+        breakA, breakB = m23.broken_ring_bonds()
+        self.assertEqual(len(breakA), 1)
+        self.assertEqual(len(breakB), 0)
+
+    def test_macro_cycle(self):
+        sdf_dir = base / "schrodinger_sets/macrocycles"
+        sdf = Chem.SDMolSupplier(sdf_dir / "2B8V_lig24and25_alpha05_ligands.sdf", removeHs=False)
+        mol1 = sdf[0]
+        mol2 = sdf[1]
+
+        m12 = lomap_mcs.MCS(
+            mol1, mol2,
+            time=40, threed=True, max3d=1.5, element_change=True,
+            seed="", shift=False, ring_breaking=True,
+        )
+        breakA, breakB = m12.broken_ring_bonds()
+        self.assertEqual((len(breakA),len(breakB)), (1, 0))
+
 
 if __name__ == "__main__":
     unittest.main()

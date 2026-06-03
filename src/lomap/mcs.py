@@ -1350,12 +1350,61 @@ class MCS:
 
             return bonds_to_break
 
+        # Build noh↔noh mappings across the two molecules
+        moli_to_molj_noh = {int(at.GetProp("to_moli")): int(at.GetProp("to_molj"))
+                            for at in self.mcs_mol.GetAtoms()}
+        molj_to_moli_noh = {j: i for i, j in moli_to_molj_noh.items()}
+
+        def _mapped_ring_bonds_missing_in_other(mol_i, mol_j, i_to_j):
+            """
+            Find ring bonds in mol_i (noh) where both endpoints are mapped but
+            the corresponding bond does NOT exist in mol_j, AND the two mol_j
+            atoms do not share any common ring.
+
+            The "not in any common ring" guard avoids false positives for
+            ring-size changes (e.g. 6→5): the closure bond of the smaller ring
+            in mol_j maps to a path through a dummy atom in mol_i, so the two
+            real atoms are already in a common ring in mol_i and the bond that
+            closes their smaller ring in mol_j should NOT be reported.
+            """
+            molj_bond_set = {
+                (min(b.GetBeginAtomIdx(), b.GetEndAtomIdx()),
+                 max(b.GetBeginAtomIdx(), b.GetEndAtomIdx()))
+                for b in mol_j.GetBonds()
+            }
+            ring_info_j = mol_j.GetRingInfo()
+            result = []
+            for bond in mol_i.GetBonds():
+                u, v = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+                if not (mol_i.GetAtomWithIdx(u).IsInRing() and
+                        mol_i.GetAtomWithIdx(v).IsInRing()):
+                    continue
+                if u not in i_to_j or v not in i_to_j:
+                    continue
+                ju, jv = i_to_j[u], i_to_j[v]
+                if (min(ju, jv), max(ju, jv)) in molj_bond_set:
+                    continue
+                # Guard: if the corresponding mol_j atoms share a common ring,
+                # the missing bond in mol_i is covered by the ring-size change
+                # plus dummy atoms — do not report.
+                if ring_info_j.AreAtomsInSameRing(ju, jv):
+                    continue
+                result.append((min(u, v), max(u, v)))
+            return result
+
         def _to_all_idx(bonds, noh_to_all):
             return [(noh_to_all[i], noh_to_all[j]) for i, j in bonds]
 
+        breaks_i = (_breaking_bonds(self._moli_noh, mapped_moli)
+                    + _mapped_ring_bonds_missing_in_other(
+                        self._moli_noh, self._molj_noh, moli_to_molj_noh))
+        breaks_j = (_breaking_bonds(self._molj_noh, mapped_molj)
+                    + _mapped_ring_bonds_missing_in_other(
+                        self._molj_noh, self._moli_noh, molj_to_moli_noh))
+
         return (
-            _to_all_idx(_breaking_bonds(self._moli_noh, mapped_moli), self._map_moli_noh),
-            _to_all_idx(_breaking_bonds(self._molj_noh, mapped_molj), self._map_molj_noh),
+            _to_all_idx(breaks_i, self._map_moli_noh),
+            _to_all_idx(breaks_j, self._map_molj_noh),
         )
 
     def heavy_atom_match_list(self):
