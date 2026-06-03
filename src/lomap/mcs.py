@@ -713,8 +713,12 @@ class MCS:
         if not ring_breaking:
             trim_mcs_fix_broken_rdkit_code()
 
-        # Cleanup any partial rings remaining
-        delete_broken_ring()
+        # Cleanup any partial rings remaining.
+        # Skip when ring_breaking=True: bridgehead atoms that sit at the ring-
+        # size boundary appear in a ring in both parents but as chain atoms in
+        # the MCS, so delete_broken_ring() would falsely prune them.
+        if not ring_breaking:
+            delete_broken_ring()
 
         # Only single fragment
         mols = Chem.GetMolFrags(self.mcs_mol, asMols=True, sanitizeFrags=False)

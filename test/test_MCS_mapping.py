@@ -188,6 +188,17 @@ class MyTestCase(unittest.TestCase):
             time=40, threed=True, max3d=1.5, element_change=True,
             seed="", shift=False, ring_breaking=True,
         )
+        map_set = get_map_set(m12)
+        self.assertSetEqual(
+            map_set,
+            {(0,0),(1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,9),(10,10),(11,11),
+             (13,13),(14,14),(15,15),(17,17),(18,18),(19,12),(20,16)},
+        )
+        # mol1 atom 12 (ring C in the 6-membered ring of 6_6 absent in 6_5) has
+        # two anchors: bonds 0-12 and 12-18.  Keep 0-12; break 12-18.
+        broken_moli, broken_molj = m12.broken_ring_bonds()
+        self.assertEqual(broken_moli, [(12, 18)])
+        self.assertEqual(broken_molj, [])
 
         m13 = lomap_mcs.MCS(
             mol1, mol3,
@@ -212,6 +223,9 @@ class MyTestCase(unittest.TestCase):
             seed="", shift=False, ring_breaking=True,
         )
         self.assertTupleEqual(m34.broken_ring_bonds(), ([(14,19)],[]))
+
+    def test_scaffold_hopping(self):
+        pass
 
 if __name__ == "__main__":
     unittest.main()
