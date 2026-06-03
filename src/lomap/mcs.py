@@ -91,6 +91,7 @@ class MCS:
         element_change: bool = True,
         seed: str = "",
         shift: bool = True,
+        ring_breaking: bool = False,
     ):
         """
         Initialization function
@@ -120,6 +121,14 @@ class MCS:
             Initial SMARTS seed for MCS search.
         shift : bool, optional
             When using threed, if to shift the molecules coordinates to maximise overlap, default True
+        ring_breaking : bool, optional
+            If True, allow ring atoms to map to non-ring atoms (core-hopping /
+            ring-opening transformations). The MCS search uses
+            ringMatchesRingOnly=False and completeRingsOnly=False, and the
+            post-processing step that removes atoms whose ring bonds are absent
+            from the MCS is skipped. Use broken_ring_bonds() to retrieve which
+            ring bonds must be severed to realise the transformation.
+            default False.
 
         .. versionchanged:: 2.1.0
            Added element_change kwarg
@@ -136,6 +145,7 @@ class MCS:
             "element_change": element_change,
             "seed": seed,
             "shift": shift,
+            "ring_breaking": ring_breaking,
         }
 
         def best_substruct_match_to_mcs(moli, molj, by_rmsd: bool, use_shift: bool):
@@ -635,8 +645,8 @@ class MCS:
             atomCompare=atom_compare,
             bondCompare=rdFMCS.BondCompare.CompareAny,
             matchValences=False,
-            ringMatchesRingOnly=True,
-            completeRingsOnly=True,
+            ringMatchesRingOnly=not ring_breaking,
+            completeRingsOnly=not ring_breaking,
             matchChiralTag=False,
             seedSmarts=seed,
         )
@@ -696,8 +706,12 @@ class MCS:
         # Trim the MCS further to remove chirality mismatches
         trim_mcs_chiral_atoms()
 
-        # Check to see if we've hit the RDKit incorrect-MCS bug
-        trim_mcs_fix_broken_rdkit_code()
+        # Check to see if we've hit the RDKit incorrect-MCS bug.
+        # Skip when ring_breaking=True: ring-breaking mappings intentionally
+        # produce bonds present in moli but absent from the MCS (the ring bond
+        # that is severed), which would otherwise be falsely pruned here.
+        if not ring_breaking:
+            trim_mcs_fix_broken_rdkit_code()
 
         # Cleanup any partial rings remaining
         delete_broken_ring()
@@ -1233,6 +1247,92 @@ class MCS:
         maplist.sort()
         return maplist
 
+    def broken_ring_bonds(self):
+        """
+        Return the ring bonds that must be severed so that every cluster of
+        unmapped ring atoms has exactly one anchoring point to the mapped
+        (real) system.
+
+        In hybrid-topology FEP a group of dummy atoms must connect to the
+        real system through exactly one bond.  A ring-opening transformation
+        leaves one or more ring atoms unmapped; those atoms are connected to
+        the real system through two bonds (the two ring bonds adjacent to the
+        break site).  Severing one of those bonds reduces the anchor count to
+        one, making the dummy partition function separable.
+
+        Algorithm
+        ---------
+        For each connected cluster of unmapped ring atoms:
+          1. Collect all bonds that connect the cluster to mapped atoms
+             (anchor bonds).
+          2. Sort anchor bonds by mapped-atom index (ascending).
+          3. Keep the first anchor bond (smallest mapped-atom index) as the
+             single attachment point; report all remaining anchor bonds as
+             bonds to break.
+
+        Indices are heavy-atom indices consistent with heavy_atom_mcs_map().
+
+        Returns
+        -------
+        moli_bonds : list of (int, int)
+            Bonds in moli to sever (one per unmapped ring cluster that has
+            more than one anchor).
+        molj_bonds : list of (int, int)
+            Same for molj.
+        """
+        mapped_moli = {int(at.GetProp("to_moli")) for at in self.mcs_mol.GetAtoms()}
+        mapped_molj = {int(at.GetProp("to_molj")) for at in self.mcs_mol.GetAtoms()}
+
+        def _breaking_bonds(mol, mapped):
+            ring_atoms = {a.GetIdx() for a in mol.GetAtoms() if a.IsInRing()}
+            unmapped_ring = ring_atoms - mapped
+            if not unmapped_ring:
+                return []
+
+            # Build adjacency restricted to unmapped ring atoms
+            adj = {idx: [] for idx in unmapped_ring}
+            for bond in mol.GetBonds():
+                i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+                if i in unmapped_ring and j in unmapped_ring:
+                    adj[i].append(j)
+                    adj[j].append(i)
+
+            # BFS to find connected clusters of unmapped ring atoms
+            visited = set()
+            clusters = []
+            for start in sorted(unmapped_ring):
+                if start in visited:
+                    continue
+                cluster, queue = set(), [start]
+                while queue:
+                    node = queue.pop()
+                    if node in cluster:
+                        continue
+                    cluster.add(node)
+                    visited.add(node)
+                    queue.extend(adj[node])
+                clusters.append(cluster)
+
+            result = []
+            for cluster in clusters:
+                # Anchor bonds: (mapped_atom, unmapped_atom), sorted by mapped idx
+                anchors = sorted(
+                    (nbr.GetIdx(), u)
+                    for u in cluster
+                    for nbr in mol.GetAtomWithIdx(u).GetNeighbors()
+                    if nbr.GetIdx() in mapped
+                )
+                # Keep the first anchor; break the rest
+                for mapped_idx, unmapped_idx in anchors[1:]:
+                    result.append((min(mapped_idx, unmapped_idx),
+                                   max(mapped_idx, unmapped_idx)))
+            return result
+
+        return (
+            _breaking_bonds(self._moli_noh, mapped_moli),
+            _breaking_bonds(self._molj_noh, mapped_molj),
+        )
+
     def heavy_atom_match_list(self):
         """
         Gives a string listing the MCS match between the two molecules as
@@ -1286,6 +1386,17 @@ class MCS:
             molj_idx = int(at.GetProp("to_molj_all"))
             attached_i = get_attached_atoms_not_in_mcs(moli, moli_idx)
             attached_j = get_attached_atoms_not_in_mcs(molj, molj_idx)
+
+            # When ring_breaking is active, unmapped ring heavy atoms hang off MCS
+            # atoms at the broken bond sites.  Exclude them here so they are not
+            # mistakenly paired with H atoms on the partner molecule.
+            if self.options.get("ring_breaking", False):
+                attached_i = [j for j in attached_i
+                              if moli.GetAtomWithIdx(j).GetAtomicNum() == 1
+                              or not moli.GetAtomWithIdx(j).IsInRing()]
+                attached_j = [j for j in attached_j
+                              if molj.GetAtomWithIdx(j).GetAtomicNum() == 1
+                              or not molj.GetAtomWithIdx(j).IsInRing()]
 
             # Now, we need to match these up, with the caveat that we *must* not match
             # a heavy to a heavy (as if we were allowed to match these, then they would be

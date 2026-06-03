@@ -5,10 +5,12 @@ from rdkit import Chem
 
 base = Path(__file__).resolve().parent
 
-def get_map_dict(mcs:lomap_mcs.MCS):
-    map_dict = {int(k): int(v) for k, v in (item.split(":") for item in mcs.all_atom_match_list().split(","))}
 
-def get_map_set(mcs:lomap_mcs.MCS):
+def get_map_dict(mcs: lomap_mcs.MCS) -> dict:
+    return {int(k): int(v) for k, v in (item.split(":") for item in mcs.all_atom_match_list().split(","))}
+
+
+def get_map_set(mcs: lomap_mcs.MCS) -> set:
     map_AB_list = [(int(k), int(v)) for k, v in (item.split(":") for item in mcs.all_atom_match_list().split(","))]
     a_list = [a for a, b in map_AB_list]
     b_list = [b for a, b in map_AB_list]
@@ -19,17 +21,24 @@ def get_map_set(mcs:lomap_mcs.MCS):
     return set(map_AB_list)
 
 
-
 class MyTestCase(unittest.TestCase):
     def test_ring_breaking(self):
         print("# ring breaking")
         sdf_dir = base / "schrodinger_sets/water_set/hsp90_woodhead"
-        mol1 = Chem.SDMolSupplier(sdf_dir/'A01.sdf', removeHs=False)[0]
-        mol2 = Chem.SDMolSupplier(sdf_dir/'A02.sdf', removeHs=False)[0]
-        mol3 = Chem.SDMolSupplier(sdf_dir / 'A03.sdf', removeHs=False)[0]
-        mol4 = Chem.SDMolSupplier(sdf_dir / 'A04.sdf', removeHs=False)[0]
+        mol1 = Chem.SDMolSupplier(sdf_dir / "A01.sdf", removeHs=False)[0]
+        mol2 = Chem.SDMolSupplier(sdf_dir / "A02.sdf", removeHs=False)[0]
+        mol3 = Chem.SDMolSupplier(sdf_dir / "A03.sdf", removeHs=False)[0]
+        mol4 = Chem.SDMolSupplier(sdf_dir / "A04.sdf", removeHs=False)[0]
 
-        m12 = lomap_mcs.MCS(mol1, mol2, time=40, threed=True, max3d=1.5, element_change=True, seed='', shift=False)
+        # ── A01 → A02 ──────────────────────────────────────────────────────────
+        # A01 has a 5-membered ring (atoms 2,3,22,21,4); A02 has an open
+        # isopropyl chain instead.  Ring atoms 2 and 22 map to chain atoms,
+        # ring atom 3 (CH2) is left unmapped, breaking bonds 2-3 and 3-22.
+        m12 = lomap_mcs.MCS(
+            mol1, mol2,
+            time=40, threed=True, max3d=1.5, element_change=True,
+            seed="", shift=False, ring_breaking=True,
+        )
         map_set = get_map_set(m12)
         self.assertSetEqual(
             map_set,
@@ -63,15 +72,31 @@ class MyTestCase(unittest.TestCase):
                 (39, 37),
                 (40, 38),
                 (41, 39),
-                # ring breaking
-                (1,2),(26, 26),(27, 27),(28,28),
-                (2,1),
-                (0,0),(23,22),(24,23),(25,24),
-                (22,21),(42,40)
-            })
-        # bond breaking should happen in stateA 2-3 or 3-22
+                # ring-breaking atoms
+                (0, 0), (1, 2), (2, 1), (22, 21),
+                # H on ring-breaking heavy atoms
+                (23, 22), (24, 23), (25, 24),
+                (26, 26), (27, 27), (28, 28),
+                (42, 40),
+            },
+        )
 
-        m34 = lomap_mcs.MCS(mol3, mol4, time=40, threed=True, max3d=1.5, element_change=True, seed='', shift=False)
+        # Atom 3 (unmapped CH2) has two anchors: bonds 2-3 and 3-22.
+        # Keep bond 2-3 (lowest mapped-atom index); break bond 3-22.
+        # One anchor ensures the dummy partition function is separable.
+        broken_moli, broken_molj = m12.broken_ring_bonds()
+        self.assertEqual(broken_moli, [(3, 22)])
+        self.assertEqual(broken_molj, [])
+
+        # ── A03 → A04 ──────────────────────────────────────────────────────────
+        # A03 has the same 5-membered ring as A01 (with O at position 22 instead
+        # of N).  A04 has no ring there; O22 stays mapped (it's close in 3D to
+        # A04's non-ring O21), and ring atom 3 is again left unmapped.
+        m34 = lomap_mcs.MCS(
+            mol3, mol4,
+            time=40, threed=True, max3d=1.5, element_change=True,
+            seed="", shift=False, ring_breaking=True,
+        )
         map_set = get_map_set(m34)
         self.assertSetEqual(
             map_set,
@@ -105,37 +130,51 @@ class MyTestCase(unittest.TestCase):
                 (39, 38),
                 (40, 39),
                 (41, 40),
-                # ring breaking
-                (1,0),(26,23),(27,24),(28,25),
-                (2,1),
-                (0,2),(23,27),(24,28),(25,29),
-            })
-        # bond breaking should happen in stateA 2-3 or 3-22
+                # ring-breaking atoms (O22 in ring maps to non-ring O21 in A04)
+                (0, 2), (1, 0), (2, 1), (22, 21),
+                # H on ring-breaking heavy atoms
+                (23, 27), (24, 28), (25, 29),
+                (26, 23), (27, 24), (28, 25),
+            },
+        )
 
+        # Same ring structure as A01: atom 3 unmapped, keep bond 2-3, break 3-22.
+        broken_moli, broken_molj = m34.broken_ring_bonds()
+        self.assertEqual(broken_moli, [(3, 22)])
+        self.assertEqual(broken_molj, [])
 
     def test_ring_easy_mapping(self):
         print("# no ring breaking")
         sdf_dir = base / "schrodinger_sets/water_set/hsp90_woodhead"
-        mol1 = Chem.SDMolSupplier(sdf_dir/'A01.sdf', removeHs=False)[0]
-        mol3 = Chem.SDMolSupplier(sdf_dir/'A03.sdf', removeHs=False)[0]
-        mol2 = Chem.SDMolSupplier(sdf_dir / 'A02.sdf', removeHs=False)[0]
-        mol4 = Chem.SDMolSupplier(sdf_dir / 'A04.sdf', removeHs=False)[0]
+        mol1 = Chem.SDMolSupplier(sdf_dir / "A01.sdf", removeHs=False)[0]
+        mol3 = Chem.SDMolSupplier(sdf_dir / "A03.sdf", removeHs=False)[0]
+        mol2 = Chem.SDMolSupplier(sdf_dir / "A02.sdf", removeHs=False)[0]
+        mol4 = Chem.SDMolSupplier(sdf_dir / "A04.sdf", removeHs=False)[0]
 
-        m13 = lomap_mcs.MCS(mol1, mol3, time=40, threed=True, max3d=1.0, element_change=True, seed='', shift=False)
+        m13 = lomap_mcs.MCS(mol1, mol3, time=40, threed=True, max3d=1.0, element_change=True, seed="", shift=False)
         map_set = get_map_set(m13)
-        self.assertSetEqual(map_set, set([(i,i) for i in range(42)]))
+        self.assertSetEqual(map_set, set([(i, i) for i in range(42)]))
+        # no ring-breaking: both molecules have the same ring system
+        broken_moli, broken_molj = m13.broken_ring_bonds()
+        self.assertEqual(broken_moli, [])
+        self.assertEqual(broken_molj, [])
 
-        m24 = lomap_mcs.MCS(mol2, mol4, time=40, threed=True, max3d=1.5, element_change=True, seed='', shift=False)
+        m24 = lomap_mcs.MCS(mol2, mol4, time=40, threed=True, max3d=1.5, element_change=True, seed="", shift=False)
         map_set = get_map_set(m24)
-        self.assertSetEqual(map_set,
-                            set(
-                                [(0,2),(1,1),(2,0)] + [(i,i) for i in range(3,22)]
-                                + [(22, 27), (23, 28), (24, 29),
-                                   (25, 26),
-                                   (26, 23), (27, 24), (28, 25),]
-                                + [(i, i+1) for i in range(29,40)] + [(40, 22)]
-                            )
-                            )
+        self.assertSetEqual(
+            map_set,
+            set(
+                [(0, 2), (1, 1), (2, 0)]
+                + [(i, i) for i in range(3, 22)]
+                + [(22, 27), (23, 28), (24, 29), (25, 26), (26, 23), (27, 24), (28, 25)]
+                + [(i, i + 1) for i in range(29, 40)]
+                + [(40, 22)]
+            ),
+        )
+        broken_moli, broken_molj = m24.broken_ring_bonds()
+        self.assertEqual(broken_moli, [])
+        self.assertEqual(broken_molj, [])
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     unittest.main()
