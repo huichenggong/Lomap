@@ -1262,15 +1262,17 @@ class MCS:
 
         Algorithm
         ---------
-        For each connected cluster of unmapped ring atoms:
-          1. Collect all bonds that connect the cluster to mapped atoms
-             (anchor bonds).
-          2. Sort anchor bonds by mapped-atom index (ascending).
-          3. Keep the first anchor bond (smallest mapped-atom index) as the
-             single attachment point; report all remaining anchor bonds as
-             bonds to break.
+        Multi-source BFS over unmapped ring atoms, seeded from every anchor
+        bond (bond between a cluster atom and a mapped atom), sorted by
+        mapped-atom index.  Each cluster atom is assigned to the first anchor
+        that reaches it.  A bond must be broken when it would give a cluster
+        atom a second owner:
+          - anchor bond → already-claimed atom: break the anchor bond.
+          - internal bond → atom in a different region: break the internal bond.
+        This preference for breaking internal (ring) bonds over anchor bonds
+        keeps the real atoms' local bonding environment intact.
 
-        Indices are heavy-atom indices consistent with heavy_atom_mcs_map().
+        Indices are all-atom indices consistent with all_atom_match_list().
 
         Returns
         -------
@@ -1284,12 +1286,14 @@ class MCS:
         mapped_molj = {int(at.GetProp("to_molj")) for at in self.mcs_mol.GetAtoms()}
 
         def _breaking_bonds(mol, mapped):
+            from collections import deque
+
             ring_atoms = {a.GetIdx() for a in mol.GetAtoms() if a.IsInRing()}
             unmapped_ring = ring_atoms - mapped
             if not unmapped_ring:
                 return []
 
-            # Build adjacency restricted to unmapped ring atoms
+            # Build adjacency restricted to unmapped ring atoms (internal bonds)
             adj = {idx: [] for idx in unmapped_ring}
             for bond in mol.GetBonds():
                 i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
@@ -1297,40 +1301,57 @@ class MCS:
                     adj[i].append(j)
                     adj[j].append(i)
 
-            # BFS to find connected clusters of unmapped ring atoms
-            visited = set()
-            clusters = []
-            for start in sorted(unmapped_ring):
-                if start in visited:
-                    continue
-                cluster, queue = set(), [start]
-                while queue:
-                    node = queue.pop()
-                    if node in cluster:
-                        continue
-                    cluster.add(node)
-                    visited.add(node)
-                    queue.extend(adj[node])
-                clusters.append(cluster)
+            # Multi-source BFS: seed from each anchor bond, assigning each
+            # unmapped ring atom to one mapped "owner." A bond must be broken
+            # whenever it would connect two different owners (either an anchor
+            # bond to an already-claimed cluster atom, or an internal bond
+            # between two atoms owned by different anchors).  This prefers
+            # cutting internal ring bonds over anchor bonds, which keeps the
+            # real atoms' local environment intact.
+            region = {}          # cluster atom → owning mapped atom index
+            bonds_to_break = []
+            queue = deque()
 
-            result = []
-            for cluster in clusters:
-                # Anchor bonds: (mapped_atom, unmapped_atom), sorted by mapped idx
-                anchors = sorted(
-                    (nbr.GetIdx(), u)
-                    for u in cluster
-                    for nbr in mol.GetAtomWithIdx(u).GetNeighbors()
-                    if nbr.GetIdx() in mapped
-                )
-                # Keep the first anchor; break the rest
-                for mapped_idx, unmapped_idx in anchors[1:]:
-                    result.append((min(mapped_idx, unmapped_idx),
-                                   max(mapped_idx, unmapped_idx)))
-            return result
+            anchor_bonds = sorted(
+                (nbr.GetIdx(), u)
+                for u in unmapped_ring
+                for nbr in mol.GetAtomWithIdx(u).GetNeighbors()
+                if nbr.GetIdx() in mapped
+            )
+
+            for mapped_idx, cluster_idx in anchor_bonds:
+                if cluster_idx not in region:
+                    region[cluster_idx] = mapped_idx
+                    queue.append(cluster_idx)
+                else:
+                    # Atom already claimed → this anchor creates a second
+                    # connection to the real system; sever it.
+                    bonds_to_break.append((min(mapped_idx, cluster_idx),
+                                           max(mapped_idx, cluster_idx)))
+
+            seen_bonds = set()
+            while queue:
+                u = queue.popleft()
+                for v in adj[u]:
+                    bond_key = (min(u, v), max(u, v))
+                    if bond_key in seen_bonds:
+                        continue
+                    seen_bonds.add(bond_key)
+                    if v not in region:
+                        region[v] = region[u]
+                        queue.append(v)
+                    elif region[v] != region[u]:
+                        # Internal bond connecting two different anchor regions
+                        bonds_to_break.append(bond_key)
+
+            return bonds_to_break
+
+        def _to_all_idx(bonds, noh_to_all):
+            return [(noh_to_all[i], noh_to_all[j]) for i, j in bonds]
 
         return (
-            _breaking_bonds(self._moli_noh, mapped_moli),
-            _breaking_bonds(self._molj_noh, mapped_molj),
+            _to_all_idx(_breaking_bonds(self._moli_noh, mapped_moli), self._map_moli_noh),
+            _to_all_idx(_breaking_bonds(self._molj_noh, mapped_molj), self._map_molj_noh),
         )
 
     def heavy_atom_match_list(self):

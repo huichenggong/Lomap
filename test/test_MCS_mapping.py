@@ -175,6 +175,43 @@ class MyTestCase(unittest.TestCase):
         self.assertEqual(broken_moli, [])
         self.assertEqual(broken_molj, [])
 
+    def test_ring_breaking_2(self):
+        print("# ring breaking")
+        sdf_dir = base / "ring_breaking_sample"
+        mol1 = Chem.SDMolSupplier(sdf_dir / "6_6.sdf", removeHs=False)[0]
+        mol2 = Chem.SDMolSupplier(sdf_dir / "6_5.sdf", removeHs=False)[0]
+        mol3 = Chem.SDMolSupplier(sdf_dir / "6_6_OO.sdf", removeHs=False)[0]
+        mol4 = Chem.SDMolSupplier(sdf_dir / "6_6_N.sdf", removeHs=False)[0]
+
+        m12 = lomap_mcs.MCS(
+            mol1, mol2,
+            time=40, threed=True, max3d=1.5, element_change=True,
+            seed="", shift=False, ring_breaking=True,
+        )
+
+        m13 = lomap_mcs.MCS(
+            mol1, mol3,
+            time=40, threed=True, max3d=1.5, element_change=True,
+            seed="", shift=False, ring_breaking=True,
+        )
+        map_set = get_map_set(m13)
+        self.assertSetEqual(
+            map_set, {(14, 13), (17, 15), (2, 2), (11, 11), (7, 7), (16, 16), (15, 17), (3, 3), (12, 12), (21, 21), (8, 8), (19, 20), (18, 18), (4, 4), (5, 5), (0, 0), (9, 9), (1, 1), (10, 10), (6, 6)}
+        )
+        # 6_6_OO has an O-O bond (atoms 9-11 in _molj_noh = atoms 14-19 in full mol3).
+        # Both O atoms are unmapped; each anchors to one real atom (0 and 7).
+        # Break the internal O-O bond so each O is an independent dummy group
+        # with exactly one anchor, keeping the real atoms' local environment intact.
+        broken_moli, broken_molj = m13.broken_ring_bonds()
+        self.assertEqual(broken_moli, [])
+        self.assertEqual(broken_molj, [(14, 19)])
+
+        m34 = lomap_mcs.MCS(
+            mol3, mol4,
+            time=40, threed=True, max3d=1.5, element_change=True,
+            seed="", shift=False, ring_breaking=True,
+        )
+        self.assertTupleEqual(m34.broken_ring_bonds(), ([(14,19)],[]))
 
 if __name__ == "__main__":
     unittest.main()
