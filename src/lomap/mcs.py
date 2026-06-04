@@ -1358,36 +1358,30 @@ class MCS:
         def _mapped_ring_bonds_missing_in_other(mol_i, mol_j, i_to_j):
             """
             Find ring bonds in mol_i (noh) where both endpoints are mapped but
-            the corresponding bond does NOT exist in mol_j, AND the two mol_j
-            atoms do not share any common ring.
+            the corresponding bond does NOT exist in mol_j.
 
-            The "not in any common ring" guard avoids false positives for
-            ring-size changes (e.g. 6→5): the closure bond of the smaller ring
-            in mol_j maps to a path through a dummy atom in mol_i, so the two
-            real atoms are already in a common ring in mol_i and the bond that
-            closes their smaller ring in mol_j should NOT be reported.
+            This catches two complementary cases:
+            - A ring-closing bond in mol_i that simply doesn't exist in mol_j
+              (macrocycle opening: all atoms mapped, ring bond disappears).
+            - A ring-closing bond in mol_i whose counterpart in mol_j is reached
+              only through a path involving dummy atoms (ring-size change: the
+              direct bond forms/breaks as the dummy atom appears/disappears).
+            Both cases represent bonds the FEP engine must handle explicitly.
             """
             molj_bond_set = {
                 (min(b.GetBeginAtomIdx(), b.GetEndAtomIdx()),
                  max(b.GetBeginAtomIdx(), b.GetEndAtomIdx()))
                 for b in mol_j.GetBonds()
             }
-            ring_info_j = mol_j.GetRingInfo()
             result = []
             for bond in mol_i.GetBonds():
                 u, v = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
-                if not (mol_i.GetAtomWithIdx(u).IsInRing() and
-                        mol_i.GetAtomWithIdx(v).IsInRing()):
+                if not bond.IsInRing():
                     continue
                 if u not in i_to_j or v not in i_to_j:
                     continue
                 ju, jv = i_to_j[u], i_to_j[v]
                 if (min(ju, jv), max(ju, jv)) in molj_bond_set:
-                    continue
-                # Guard: if the corresponding mol_j atoms share a common ring,
-                # the missing bond in mol_i is covered by the ring-size change
-                # plus dummy atoms — do not report.
-                if ring_info_j.AreAtomsInSameRing(ju, jv):
                     continue
                 result.append((min(u, v), max(u, v)))
             return result
@@ -1523,3 +1517,35 @@ class MCS:
 
         maplist.sort()
         return ",".join([str(i) + ":" + str(j) for (i, j) in maplist])
+
+    def mapping_info(self) -> dict:
+        """
+        Return atom mapping and ring-bond breaks as a single dict.
+
+        Keys
+        ----
+        atom_map : list of [int, int]
+            All-atom pairs (mol_i index, mol_j index), sorted by mol_i index.
+        broken_bonds_moli : list of [int, int]
+            Ring bonds in mol_i that must be severed (all-atom indices).
+        broken_bonds_molj : list of [int, int]
+            Ring bonds in mol_j that must be severed (all-atom indices).
+        """
+        atom_map = [
+            [int(k), int(v)]
+            for k, v in (
+                item.split(":") for item in self.all_atom_match_list().split(",")
+            )
+        ]
+        broken_i, broken_j = self.broken_ring_bonds()
+        return {
+            "atom_map": atom_map,
+            "broken_bonds_moli": [list(b) for b in broken_i],
+            "broken_bonds_molj": [list(b) for b in broken_j],
+        }
+
+    def write_mapping_json(self, path) -> None:
+        """Write mapping_info() to a JSON file at *path*."""
+        import json
+        with open(path, "w") as f:
+            json.dump(self.mapping_info(), f, indent=2)

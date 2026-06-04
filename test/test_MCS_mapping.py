@@ -198,7 +198,20 @@ class MyTestCase(unittest.TestCase):
         # two anchors: bonds 0-12 and 12-18.  Keep 0-12; break 12-18.
         broken_moli, broken_molj = m12.broken_ring_bonds()
         self.assertEqual(broken_moli, [(12, 18)])
-        self.assertEqual(broken_molj, [])
+        self.assertEqual(broken_molj, [(0, 18)])
+
+        m12 = lomap_mcs.MCS(
+            mol1, mol2,
+            time=40, threed=True, max3d=0.54, element_change=True,
+            seed="", shift=False, ring_breaking=True,
+        )
+        map_set = get_map_set(m12)
+        self.assertSetEqual(
+            map_set,
+            {(0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8), (9, 9), (10, 10), (11, 11),
+             (13, 13), (14, 14), (19, 12), (20, 16)},
+        )
+        self.assertEqual(m12.broken_ring_bonds(), ([(12, 18)], [(11, 18)]))
 
         m13 = lomap_mcs.MCS(
             mol1, mol3,
@@ -262,7 +275,7 @@ class MyTestCase(unittest.TestCase):
             seed="", shift=False, ring_breaking=True,
         )
         breakA, breakB = m12.broken_ring_bonds()
-        self.assertEqual((len(breakA),len(breakB)), (1, 0))
+        self.assertEqual(m12.broken_ring_bonds(), ([(11,12)],[]))
 
 
 if __name__ == "__main__":
